@@ -1,0 +1,441 @@
+openapi: 3.0.3
+info:
+  title: Task Manager API
+  description: API для управления задачами с разделением ролей (admin/user) и авторизацией на основе Bearer токенов (Laravel Sanctum).
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000/api
+    description: Локальный сервер разработки (Laravel)
+paths:
+  /auth/login:
+    post:
+      summary: Аутентификация пользователя
+      description: Принимает email и пароль, возвращает токен доступа Sanctum и информацию о пользователе с его ролями.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: admin@test.com
+                password:
+                  type: string
+                  format: password
+                  example: password
+      responses:
+        '200':
+          description: Успешная аутентификация
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    example: 1|laravel_sanctum_token_string_here
+                  user:
+                    $ref: '#/components/schemas/User'
+        '422':
+          description: Ошибка валидации (неверные учетные данные)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+
+  /auth/logout:
+    post:
+      summary: Выход из системы
+      description: Отзывает текущий токен доступа пользователя.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Успешный выход из системы
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Logged out successfully.
+        '401':
+          description: Пользователь не авторизован
+
+  /user:
+    get:
+      summary: Получение профиля текущего пользователя
+      description: Возвращает данные авторизованного пользователя.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Данные профиля
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: Пользователь не авторизован
+
+  /tasks:
+    get:
+      summary: Получить список задач
+      description: |
+        Возвращает пагинированный список задач.
+        Администратор (`admin`) видит все задачи всех пользователей.
+        Обычный пользователь (`user`) видит только свои собственные задачи.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: search
+          in: query
+          description: Поиск по названию (title) или описанию (description) задачи
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Фильтрация по статусу задачи
+          required: false
+          schema:
+            type: string
+            enum: [pending, in_progress, completed]
+        - name: sort_by
+          in: query
+          description: Поле для сортировки
+          required: false
+          schema:
+            type: string
+            enum: [due_date, status, created_at]
+            default: created_at
+        - name: sort_direction
+          in: query
+          description: Направление сортировки
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: page
+          in: query
+          description: Номер страницы для пагинации
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          description: Количество задач на страницу (макс. 100)
+          required: false
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Список задач с мета-данными пагинации
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+                  links:
+                    $ref: '#/components/schemas/PaginationLinks'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          description: Пользователь не авторизован
+
+    post:
+      summary: Создать новую задачу (Только admin)
+      description: Позволяет пользователям с ролью `admin` создавать новые задачи. Обычным пользователям доступ запрещен.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+              properties:
+                title:
+                  type: string
+                  minLength: 3
+                  maxLength: 255
+                  example: Написать OpenAPI спецификацию
+                description:
+                  type: string
+                  nullable: true
+                  example: Создать файл openapi.yaml с описанием всех API эндпоинтов.
+                due_date:
+                  type: string
+                  format: date
+                  nullable: true
+                  example: '2026-08-01'
+                status:
+                  type: string
+                  enum: [pending, in_progress, completed]
+                  default: pending
+                  example: in_progress
+      responses:
+        '201':
+          description: Задача успешно создана
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Task'
+        '401':
+          description: Пользователь не авторизован
+        '403':
+          description: Доступ запрещен (нет прав `admin`)
+        '422':
+          description: Ошибка валидации полей
+
+  /tasks/{id}:
+    get:
+      summary: Получить детальную информацию о задаче
+      description: Возвращает одну задачу по её ID. Обычный пользователь может просматривать только свою задачу.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID задачи
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Данные задачи
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Task'
+        '401':
+          description: Пользователь не авторизован
+        '403':
+          description: Доступ запрещен (задача принадлежит другому пользователю)
+        '404':
+          description: Задача не найдена
+
+    put:
+      summary: Обновить задачу полностью или частично (Только admin)
+      description: Изменение полей задачи. Доступно только для роли `admin`.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID задачи
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 3
+                  maxLength: 255
+                  example: Обновленное название задачи
+                description:
+                  type: string
+                  nullable: true
+                due_date:
+                  type: string
+                  format: date
+                  nullable: true
+                status:
+                  type: string
+                  enum: [pending, in_progress, completed]
+      responses:
+        '200':
+          description: Задача успешно обновлена
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Task'
+        '401':
+          description: Пользователь не авторизован
+        '403':
+          description: Доступ запрещен (нет прав `admin`)
+        '404':
+          description: Задача не найдена
+        '422':
+          description: Ошибка валидации полей
+
+    delete:
+      summary: Удалить задачу (Только admin)
+      description: Удаляет задачу из базы данных. Доступно только для роли `admin`.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID задачи
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Задача успешно удалена (нет содержимого в ответе)
+        '401':
+          description: Пользователь не авторизован
+        '403':
+          description: Доступ запрещен (нет прав `admin`)
+        '404':
+          description: Задача не найдена
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Administrator
+        email:
+          type: string
+          example: admin@test.com
+        roles:
+          type: array
+          items:
+            type: string
+          example: [admin]
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 12
+        title:
+          type: string
+          example: Написать тесты
+        description:
+          type: string
+          nullable: true
+          example: Покрыть API автотестами
+        status:
+          type: string
+          example: in_progress
+        status_label:
+          type: string
+          example: In Progress
+        due_date:
+          type: string
+          format: date
+          nullable: true
+          example: '2026-07-20'
+        user_id:
+          type: integer
+          example: 2
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-07-15T02:00:00.000000Z'
+        updated_at:
+          type: string
+          format: date-time
+          example: '2026-07-15T02:30:00.000000Z'
+
+    ValidationError:
+      type: object
+      properties:
+        message:
+          type: string
+          example: The given data was invalid.
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            email:
+              - 'The email field is required.'
+            password:
+              - 'The password field must be at least 8 characters.'
+
+    PaginationLinks:
+      type: object
+      properties:
+        first:
+          type: string
+          nullable: true
+          example: http://localhost:8000/api/tasks?page=1
+        last:
+          type: string
+          nullable: true
+          example: http://localhost:8000/api/tasks?page=3
+        prev:
+          type: string
+          nullable: true
+          example: null
+        next:
+          type: string
+          nullable: true
+          example: http://localhost:8000/api/tasks?page=2
+
+    PaginationMeta:
+      type: object
+      properties:
+        current_page:
+          type: integer
+          example: 1
+        from:
+          type: integer
+          example: 1
+        last_page:
+          type: integer
+          example: 3
+        path:
+          type: string
+          example: http://localhost:8000/api/tasks
+        per_page:
+          type: integer
+          example: 10
+        to:
+          type: integer
+          example: 10
+        total:
+          type: integer
+          example: 25
